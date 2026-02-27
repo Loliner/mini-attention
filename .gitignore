@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Distribution / packaging
+*.whl
+
+# IDE
+.vscode/
+.idea/
+*.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model weights & data
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.h5
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+*.log
