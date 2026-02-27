@@ -125,10 +125,12 @@ def rerank_search(index, chunks, query, top_k=15, final_k=5):
 # 5. 上下文构建 (回溯段落)
 # =========================
 def get_ordered_contexts(searchChunks, paraDict, sentenceDict):
-    # 找到命中的句子所属的段落
+    # 建立句子内容 -> 在 searchChunks 中的最高排名（最小索引）的映射
+    chunk_rank = {chunk: i for i, chunk in enumerate(searchChunks)}
+
     chunk_set = set(searchChunks)
     para_map = {}  # { para_id: [...content] }
-    
+
     # sentenceDict: sent_id -> {"content": ..., "para_id": ...}
     for sent_info in sentenceDict.values():
         if sent_info["content"] in chunk_set:
@@ -144,19 +146,23 @@ def get_ordered_contexts(searchChunks, paraDict, sentenceDict):
         # 获取句子序号
         all_sents = re.split(r'(?<=[。！？])\s*', para["content"])
         all_sents = [s.strip() for s in all_sents if len(s.strip()) > 5]
-        sent_to_index = {s: i + 1 for i, s in enumerate(all_sents)} # { [content]: index }
-        
-        matched_info = [{"content": m, "index": sent_to_index.get(m, "?")} for m in matched] # [{content: ..., index: ...}]
-        
+        sent_to_index = {s: i + 1 for i, s in enumerate(all_sents)}  # { content: index }
+
+        matched_info = [{"content": m, "index": sent_to_index.get(m, "?")} for m in matched]
+
+        # 该段落在 searchChunks 中最早出现的句子排名，决定段落顺序
+        best_rank = min(chunk_rank[m] for m in matched)
+
         result.append({
             "title": para["title"],
             "content": para["content"],
             "order": para["order"],
-            "matched_sents": matched_info
+            "matched_sents": matched_info,
+            "best_rank": best_rank,
         })
 
-    # 按物理顺序排序，确保编号一致性
-    result.sort(key=lambda x: x["order"])
+    # 按 searchChunks 的相关度顺序排序（排名越小越靠前）
+    result.sort(key=lambda x: x["best_rank"])
     return result
 
 # =========================
@@ -176,14 +182,15 @@ def build_prompt(contexts, question):
     
     context_text = "\n\n".join(context_text_list)
     citations_str = "\n".join(citations_list)
-    
+    print('contexts', contexts)
+    print("context_text", context_text)
     print("citations_str", citations_str)
 
     return f"""
 你是一个专业的助手。请仅基于以下“内容”回答问题。
 
 ### 规则：
-1. **直接标注**：在你的每一句回答末尾，必须标注其内容来源的引用编号。例如：“员工享有年假 [1]。”
+1. **直接标注**：在你的每一句回答末尾，必须标注其内容来源的引用编号。
 2. **多重引用**：如果一句话结合了多个来源，请同时标注，如 [1][2]。
 3. **引用说明**：在末尾表明出处来源。
 4. **不知道**：如果内容未提及，请回答“不知道”。
@@ -198,7 +205,8 @@ def build_prompt(contexts, question):
 {question}
 
 ### 回答范例
-员工每月享有 50 澳元餐补，并提供年度体检福利 [1]。此外，晋升成功后年假会增加 [2]。
+员工每月享有 50 澳元餐补，并提供年度体检福利 [1]。
+此外，晋升成功后年假会增加 [2]。
 
 参考出处：
 [1] 【八、福利补贴】第1,2条
