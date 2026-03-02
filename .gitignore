@@ -30,6 +30,7 @@ env/
 *.ckpt
 *.bin
 *.h5
+*.sqlite3
 
 # Environment variables
 .env

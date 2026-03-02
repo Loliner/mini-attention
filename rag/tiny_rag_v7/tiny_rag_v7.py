@@ -1,21 +1,23 @@
 # =========================
-# 基于 v5 版本优化:
-# 1. 引入 Cross-Encoder (Sentence-Transformers) 进行重排，大幅提升相关度过滤精度。
-# 2. 优化编号逻辑：由 Python 预先分配静态角标 [1][2]，LLM 只负责在句末标注，不再承担重新排序的任务。
-# 3. 简化 Prompt：去除复杂的动态重编指令，提高生成结果的稳定性。
+# 基于 v6 版本优化:
+# 1. 接入 ChromaDB 持久化向量数据库。
+# 2. 实现“仅在数据库为空时执行 Embedding”的逻辑，避免重复计算。
+# 3. 保留原有冗余注释与数据结构（paraDict, sentenceDict），便于教学理解。
 # =========================
 import os
-# 限制线程数，防止信号量冲突
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
 import re
 import uuid
 import numpy as np
-import faiss
 import torch
+import chromadb # 新增：导入 ChromaDB
 from openai import OpenAI
 from dotenv import load_dotenv
 from sentence_transformers import CrossEncoder
+from pathlib import Path
+
+# 限制线程数，防止信号量冲突
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 
 # =========================
 # 1. 初始化
@@ -29,6 +31,10 @@ LLM_MODEL = "gpt-4o-mini"
 # 引入本地重排模型 (建议使用 BGE 或混合模型，会自动下载)
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 RERANK_MODEL = CrossEncoder('BAAI/bge-reranker-base', device=device)
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+file_path = SCRIPT_DIR.parent / "knowledge_base_entangled.txt"
+db_path = SCRIPT_DIR / "chroma_db"
 
 # =========================
 # 2. 文档加载
@@ -69,39 +75,73 @@ def sub_sentence_chunking(text):
     return paraDict, sentenceDict, chunks
 
 # =========================
-# 3. 向量检索 (粗排)
+# 3. 向量检索 (ChromaDB 封装)
 # =========================
 def get_embedding(text):
     response = client.embeddings.create(model=EMBED_MODEL, input=text)
     return response.data[0].embedding
 
-def build_faiss_index(chunks):
-    print("正在生成 embedding...")
-    vectors = [get_embedding(chunk) for chunk in chunks]
-    vectors = np.array(vectors).astype("float32")
+def get_or_create_db(collection_name=db_path):
+    # 创建持久化客户端，数据会存在本地目录
+    chroma_client = chromadb.PersistentClient(path=collection_name)
+    # 获取或创建集合
+    collection = chroma_client.get_or_create_collection(name="company_policies")
+    return collection
 
-    dimension = vectors.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(vectors)
-    return index
+def init_db_with_data(collection, chunks, sentenceDict):
+    """
+    如果数据库为空，则批量执行 embedding 并存入
+    """
+    print("数据库为空，正在生成 embedding 并持久化...")
+    ids = []
+    embeddings = []
+    metadatas = []
+    documents = []
+
+    for i, chunk in enumerate(chunks):
+        # 找到对应的 sent_id（冗余写法，为了对齐你的 sentenceDict）
+        # 实际生产中可以直接从循环获取
+        chunk_id = f"id_{i}"
+        vec = get_embedding(chunk)
+        
+        # 存入数据库所需的数据格式
+        ids.append(chunk_id)
+        embeddings.append(vec)
+        documents.append(chunk)
+        # metadata 存储后续回溯段落所需的关键信息
+        metadatas.append({"source": "policy_doc"})
+
+    # 批量添加
+    collection.add(
+        ids=ids,
+        embeddings=embeddings,
+        metadatas=metadatas,
+        documents=documents
+    )
+    print(f"成功存入 {len(chunks)} 条记录。")
 
 # =========================
 # 4. 重排逻辑 (精排)
 # =========================
-def rerank_search(index, chunks, query, top_k=15, final_k=5):
+def rerank_search(collection, query, top_k=15, final_k=5):
     """
     双层检索优化：
-    1. 使用 FAISS 粗排拉取 top_k 个候选子块。
+    1. 使用 ChromaDB 进行粗排。
     2. 使用 Cross-Encoder 对候选块进行精排。
     """
+    # ChromaDB 的 query 会自动处理向量化（如果绑定了 embedding 函数）
+    # 这里我们手动传入生成的向量
     q_vec = get_embedding(query)
-    query_vec = np.array([q_vec]).astype("float32")
-    D, I = index.search(query_vec, top_k)
     
-    candidate_chunks = []
-    for distance, idx in zip(D[0], I[0]):
-        if distance < 1.6: # 保证相关性召回
-            candidate_chunks.append(chunks[idx]) 
+    # 粗排结果
+    results = collection.query(
+        query_embeddings=[q_vec],
+        n_results=top_k
+    )
+    # print("粗排结果:", results)
+    
+    # results['documents'] 返回的是列表的列表 [[doc1, doc2...]]
+    candidate_chunks = results['documents'][0]
     
     # 构造重排对 [ (query, chunk1), (query, chunk2), ... ]
     pairs = [[query, chunk] for chunk in candidate_chunks]
@@ -112,17 +152,17 @@ def rerank_search(index, chunks, query, top_k=15, final_k=5):
     # 公式: 1 / (1 + exp(-x))
     sig_scores = 1 / (1 + np.exp(-raw_scores/T))
     
-    print("scores:", sig_scores)
+    # print("scores:", sig_scores)
     # 按重排分数排序
     ranked_results = sorted(zip(candidate_chunks, sig_scores), key=lambda x: x[1], reverse=True)
-    print("ranked_results:", ranked_results)
+    # print("ranked_results:", ranked_results)
     
     # 过滤掉分数过低的项并截取前 final_k
     final_results = [res[0] for res in ranked_results if res[1] > 0.8] # 阈值 0 过滤不相关
     return final_results[:final_k]
 
 # =========================
-# 5. 上下文构建 (回溯段落)
+# 5. 上下文构建
 # =========================
 def get_ordered_contexts(searchChunks, paraDict, sentenceDict):
     # 建立句子内容 -> 在 searchChunks 中的最高排名（最小索引）的映射
@@ -182,9 +222,9 @@ def build_prompt(contexts, question):
     
     context_text = "\n\n".join(context_text_list)
     citations_str = "\n".join(citations_list)
-    print('contexts', contexts)
-    print("context_text", context_text)
-    print("citations_str", citations_str)
+    # print('contexts', contexts)
+    # print("context_text", context_text)
+    # print("citations_str", citations_str)
 
     return f"""
 你是一个专业的助手。请仅基于以下“内容”回答问题。
@@ -225,21 +265,30 @@ def ask_llm(prompt):
     return response.choices[0].message.content
 
 # =========================
-# 9. 主流程
+# 7. 主流程 (引入判断逻辑)
 # =========================
 def main():
-    text = load_text("./rag/knowledge_base_entangled.txt")
+    text = load_text(file_path)
+    # 注意：即便引入数据库，paraDict 和 sentenceDict 依然需要在启动时构建
+    # 因为这是我们回溯“父块”逻辑的内存索引
     paraDict, sentenceDict, chunks = sub_sentence_chunking(text)
-    index = build_faiss_index(chunks)
 
-    print("\nRAG 系统已启动 (Cross-Encoder 重排版)！\n")
+    # 初始化 ChromaDB
+    collection = get_or_create_db()
+
+    # 关键判断：如果库里没数据，才进行 Embedding
+    if collection.count() == 0:
+        init_db_with_data(collection, chunks, sentenceDict)
+    else:
+        print(f"检测到已有持久化数据，加载记录数: {collection.count()}。跳过 Embedding 阶段。")
+
+    print("\nRAG 系统已启动 (ChromaDB 持久化版)！\n")
 
     while True:
         question = input("你的问题：")
         if question.lower() == "exit": break
 
-        # 调用精排搜索
-        refined_chunks = rerank_search(index, chunks, question)
+        refined_chunks = rerank_search(collection, question)
         contexts = get_ordered_contexts(refined_chunks, paraDict, sentenceDict)
         
         if not contexts:
