@@ -1,8 +1,10 @@
 # 这是基于 v1 的优化版本，新增了：
 # 1. 使用 function calling  替换 v1 的 Action: 和 Observation: 正则匹配
+# 2. function calling 改为并行（非 Action: 中的串行）
 import openai
 import re
 import json
+import asyncio
 from dotenv import load_dotenv
 
 # 工具 1: 模拟数据库查询
@@ -74,6 +76,9 @@ class SimpleAgent:
         self.messages = [{"role": "system", "content": system_prompt}]
 
     def __call__(self, user_input):
+        return asyncio.run(self.async_run(user_input))
+    
+    async def async_run(self, user_input):
         self.messages.append({"role": "user", "content": user_input})
         
         # 最多循环 5 次，防止思考掉入死循环
@@ -93,6 +98,12 @@ class SimpleAgent:
             print(f"output content: {content}\n")
             print(f"tool_calls: {tool_calls}\n")
             
+                        # 无 tool_calls 时才是最终文字答案
+            if not tool_calls:
+                if "Final Answer:" in content:
+                    return content.split("Final Answer:")[1].strip()
+                continue   # 没有工具调用也没 Final Answer，继续下一轮
+            
             # 必须：先追加带 tool_calls 的 assistant 消息（有 tool_calls 时 API 要求这条）
             assistant_msg = {"role": "assistant", "content": content}
             if tool_calls:
@@ -100,25 +111,25 @@ class SimpleAgent:
                     {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                     for tc in tool_calls
                 ]
-            self.messages.append(assistant_msg)
+                self.messages.append(assistant_msg)
+                # 使用 list comprehension 创建任务
+                tasks = [self.async_execute_tool(tc) for tc in tool_calls]
+                # 类似 Promise.all()
+                results = await asyncio.gather(*tasks) 
+                self.messages.extend(results)
+            else:
+                self.messages.append(assistant_msg)
 
-            # 无 tool_calls 时才是最终文字答案
-            if not tool_calls:
-                if "Final Answer:" in content:
-                    return content.split("Final Answer:")[1].strip()
-                continue   # 没有工具调用也没 Final Answer，继续下一轮
-            
-            if tool_calls:
-                for tool_call in tool_calls:
-                    tool_name = tool_call.function.name
-                    tool_args = json.loads(tool_call.function.arguments)
-                    print(f"tool_name: {tool_name}, tool_args: {tool_args}\n")
-                    if tool_name in tools:
-                        observation = tools[tool_name](**tool_args)
-                        self.messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": tool_name, "content": str(observation)})
-                    else:
-                        error_msg = f"Observation: 错误，找不到工具 {tool_name}"
-                        self.messages.append({"role": "user", "content": error_msg})
+    async def async_execute_tool(self, tool_call):
+        tool_name = tool_call.function.name
+        tool_args = json.loads(tool_call.function.arguments)
+        print(f"tool_name: {tool_name}, tool_args: {tool_args}\n")
+        if tool_name in tools:
+            observation = tools[tool_name](**tool_args)
+            return {"tool_call_id": tool_call.id, "role": "tool", "name": tool_name, "content": str(observation)}
+        else:
+            error_msg = f"Observation: 错误，找不到工具 {tool_name}"
+            return {"role": "user", "content": error_msg}
 
 # --- 系统提示词 (System Prompt) ---
 SYSTEM_PROMPT = """
