@@ -98,7 +98,7 @@ class SimpleAgent:
             print(f"output content: {content}\n")
             print(f"tool_calls: {tool_calls}\n")
             
-                        # 无 tool_calls 时才是最终文字答案
+            # 无 tool_calls 时才是最终文字答案
             if not tool_calls:
                 if "Final Answer:" in content:
                     return content.split("Final Answer:")[1].strip()
@@ -115,14 +115,14 @@ class SimpleAgent:
                 # 使用 list comprehension 创建任务
                 tasks = [self.async_execute_tool(tc) for tc in tool_calls]
                 # 类似 Promise.all()
-                results = await asyncio.gather(*tasks) 
+                results = await asyncio.gather(*tasks)
                 self.messages.extend(results)
             else:
                 self.messages.append(assistant_msg)
 
     async def async_execute_tool(self, tool_call):
-        tool_name = tool_call.function.name
-        tool_args = json.loads(tool_call.function.arguments)
+        tool_name = tool_call.function.name # get_price
+        tool_args = json.loads(tool_call.function.arguments) # {'item_name': 'react_book'}
         print(f"tool_name: {tool_name}, tool_args: {tool_args}\n")
         if tool_name in tools:
             observation = tools[tool_name](**tool_args)
