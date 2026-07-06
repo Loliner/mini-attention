@@ -68,6 +68,37 @@ python agent/cal_agent_v2.py
 ### Agent Progression
 - v1: ReAct pattern, regex parses `Action:` / `Observation:` from LLM output
 - v2: OpenAI function calling API, async/await, parallel tool execution via `asyncio.gather()`
+- v3: Short-term memory (session cache) + multi-turn conversation
+- v4: Long-term memory via ChromaDB (cross-session retrieval)
+- v5: Plan-Execute architecture — LLM plans all steps upfront, reduces LLM calls
+- v6: Re-Plan support — triggers replanning when intermediate results require it
+
+## Curriculum
+
+Learning priority: **Agent → Engineering & Production → RAG**
+
+### Agent（当前重点）
+- [x] v1: ReAct + regex parsing
+- [x] v2: Function calling + async parallel tools
+- [x] v3: Short-term memory + multi-turn
+- [x] v4: Long-term memory (ChromaDB)
+- [x] v5: Plan-Execute
+- [x] v6: Re-Plan for conditional tasks
+- [ ] v7: Multi-Agent — Orchestrator routes subtasks to specialized Sub-Agents, parallel execution, result aggregation
+- [ ] v8: Reliability — automated eval (input → expected output → actual comparison), self-reflection & retry
+- [ ] v9: Real tools — Web search (Tavily/SerpAPI), sandboxed code execution
+
+### Engineering & Production
+- [ ] Structured output — Pydantic schema + `instructor` library for typed LLM responses
+- [ ] Streaming — SSE streaming output, real-time token display
+- [ ] Prompt caching — OpenAI/Anthropic cache mechanism to reduce token costs
+- [ ] Observability — LangFuse tracing, per-call token stats, latency tracking
+- [ ] Error handling — production-grade timeout, fallback, rate limit handling
+
+### RAG（后续）
+- [ ] Hybrid search — BM25 sparse + dense vector, RRF fusion ranking
+- [ ] Query rewriting — HyDE (Hypothetical Document Embeddings), Multi-Query expansion
+- [ ] RAG evaluation — RAGAS framework (faithfulness, answer relevance, recall)
 
 ## Tech Stack
 

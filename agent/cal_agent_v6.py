@@ -1,5 +1,5 @@
-# 基于 v4 的进阶版本，修改了：
-# 1. 将原有 ReAct 架构换成 Plan-Execute 架构
+# 基于 v5 的进阶版本，修改了：
+# 1. 将原有单次 Plan-Execute 架构改为支持 RePlan-Execute 架构
 # 
 # 但这里的优缺点也需要注意：
 # 优点：
@@ -290,6 +290,7 @@ class SimpleAgent:
             print(f"Replan: {plan}")
             result, execute_cache, need_replan = self.execute(plan)
         response = self.respond(user_input, execute_cache, result)
+        print(f"Question: {user_input}")
         print(f"Answer: {response}")
         return response
 
