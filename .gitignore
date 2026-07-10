@@ -38,3 +38,4 @@ env/
 
 # Logs
 *.log
+tmp
